@@ -27,7 +27,7 @@ API_KEY = "fp_live_d1fc94efa55ae1c34e859ee7ede568d222d93edd1886179def9adf075fbbc
 BASE_URL = "https://developers.myfundedperpetuals.com"
 ACCOUNT_ID = "jh71tm3e391rhw0pvmp5811k398f35v1"  # FP-13265579
 MARKET_ID = "binance|BTCUSDT"
-ORDER_SIZE = 0.01  # Ultra-low risk: 0.01 BTC (~$8.50 per 1% move)
+ORDER_SIZE = 0.05  # Calibrated institutional sizing: 0.05 BTC (~$10 risk per trade)
 LEVERAGE = 5
 MARGIN_MODE = "cross"
 SLIPPAGE_BPS = 50
@@ -170,7 +170,7 @@ def process_signal_background(payload: dict, t_start: float):
 
             signals_history.insert(0, {
                 "time": datetime.now().strftime("%H:%M:%S"),
-                "action": "BUY (0.01 BTC)",
+                "action": f"BUY ({ORDER_SIZE} BTC)",
                 "price": round(float(expected_price), 2),
                 "status": status_label,
                 "latency_ms": latency
@@ -222,7 +222,7 @@ def process_signal_background(payload: dict, t_start: float):
 
             signals_history.insert(0, {
                 "time": datetime.now().strftime("%H:%M:%S"),
-                "action": "SELL (0.01 BTC)",
+                "action": f"SELL ({ORDER_SIZE} BTC)",
                 "price": round(float(expected_price), 2),
                 "status": status_label,
                 "latency_ms": latency
@@ -253,10 +253,7 @@ async def handle_webhook(request: Request, background_tasks: BackgroundTasks):
         except Exception:
             payload = {}
 
-        # Queue background processing so response returns in <15ms to TradingView!
         background_tasks.add_task(process_signal_background, payload, t_start)
-        
-        # Return INSTANT HTTP 200 to TradingView
         return JSONResponse(status_code=200, content={"status": "received", "queued": True})
 
     except Exception as e:
@@ -271,11 +268,11 @@ def get_status_json():
     return {
         "status": "online",
         "account_number": acc.get("account_number", "FP-13265579") if acc else "FP-13265579",
-        "balance": acc.get("balance", 2541.23) if acc else 2541.23,
-        "equity": risk.get("equity", 2541.23),
+        "balance": acc.get("balance", 2541.33) if acc else 2541.33,
+        "equity": risk.get("equity", 2541.33),
         "daily_loss_room": risk.get("daily_loss_room", 75.0),
         "max_drawdown_room": risk.get("max_drawdown_room", 116.23),
-        "remaining_profit": risk.get("remaining_profit", 183.77),
+        "remaining_profit": risk.get("remaining_profit", 183.67),
         "open_positions": positions,
         "order_size": ORDER_SIZE,
         "market": "BTCUSDT Perpetual",
@@ -543,8 +540,8 @@ def render_dashboard():
 
             <div class="card">
                 <div class="card-label">Trading Configuration</div>
-                <div class="card-value" style="font-size: 22px;">0.01 BTC</div>
-                <div class="card-subtext">5x Leverage | Cross Margin</div>
+                <div class="card-value" style="font-size: 22px;">0.05 BTC</div>
+                <div class="card-subtext">5x Leverage | ~$10 Risk / Trade</div>
             </div>
         </div>
 
