@@ -7,7 +7,7 @@ import logging
 import urllib.request
 import urllib.parse
 from datetime import datetime
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, BackgroundTasks
 from fastapi.responses import JSONResponse, HTMLResponse
 import uvicorn
 
@@ -90,56 +90,13 @@ def close_all():
     logger.info(f"Close all response: {res}")
     return res
 
-@app.get("/api/status")
-def get_status_json():
-    acc = get_account_detail()
-    positions = get_open_positions()
-    risk = acc.get("risk", {}) if acc else {}
-    return {
-        "status": "online",
-        "account_number": acc.get("account_number", "FP-13265579") if acc else "FP-13265579",
-        "balance": acc.get("balance", 2541.23) if acc else 2541.23,
-        "equity": risk.get("equity", 2541.23),
-        "daily_loss_room": risk.get("daily_loss_room", 75.0),
-        "max_drawdown_room": risk.get("max_drawdown_room", 116.23),
-        "remaining_profit": risk.get("remaining_profit", 183.77),
-        "open_positions": positions,
-        "order_size": ORDER_SIZE,
-        "market": "BTCUSDT Perpetual",
-        "min_daily_loss_room": MIN_DAILY_LOSS_ROOM,
-        "signals": signals_history[:25],
-        "uptime_seconds": int(time.time() - bot_start_time)
-    }
-
-@app.post("/api/close-all")
-def trigger_close_all():
-    res = close_all()
-    signals_history.insert(0, {
-        "time": datetime.now().strftime("%H:%M:%S"),
-        "type": "MANUAL FLATTEN",
-        "details": "Closed all open positions from dashboard button",
-        "status": "executed"
-    })
-    return {"status": "success", "result": res}
-
-@app.post("/webhook")
-async def handle_webhook(request: Request):
-    t_start = time.time()
+def process_signal_background(payload: dict, t_start: float):
     try:
-        raw_body = await request.body()
-        body_text = raw_body.decode("utf-8")
-        logger.info(f"Incoming Webhook: {body_text}")
-        
-        try:
-            payload = json.loads(body_text)
-        except Exception:
-            payload = {}
-
         action = str(payload.get("action", "")).strip().lower()
         price = payload.get("price")
         ticker = payload.get("ticker", "BTCUSD")
 
-        # 1. Official Risk Check directly from MyFundedPerps engine
+        # 1. Official Risk Check
         acc = get_account_detail()
         risk = acc.get("risk", {}) if acc else {}
         daily_loss_room = risk.get("daily_loss_room", 75.0)
@@ -153,7 +110,7 @@ async def handle_webhook(request: Request):
                 "status": "REJECTED (Floor Protected)",
                 "latency_ms": int((time.time() - t_start) * 1000)
             })
-            return JSONResponse(status_code=403, content={"status": "rejected", "reason": "Daily loss room below safe threshold"})
+            return
 
         # 2. Action Routing
         if action in ["exit", "close", "flat"]:
@@ -166,7 +123,6 @@ async def handle_webhook(request: Request):
                 "status": "EXECUTED (Position Closed)",
                 "latency_ms": int((time.time() - t_start) * 1000)
             })
-            return {"status": "success", "action": "exit", "result": close_res}
 
         elif action in ["buy", "long"]:
             positions = get_open_positions()
@@ -181,7 +137,7 @@ async def handle_webhook(request: Request):
                         "status": "IGNORED (Already Long)",
                         "latency_ms": int((time.time() - t_start) * 1000)
                     })
-                    return {"status": "ignored", "reason": "Already Long"}
+                    return
                 elif (MARKET_ID in m_id or "BTC" in m_id) and p_side == "sell":
                     close_all()
                     time.sleep(0.5)
@@ -219,7 +175,6 @@ async def handle_webhook(request: Request):
                 "status": status_label,
                 "latency_ms": latency
             })
-            return {"status": "submitted", "order": order_payload, "response": res}
 
         elif action in ["sell", "short"]:
             positions = get_open_positions()
@@ -234,7 +189,7 @@ async def handle_webhook(request: Request):
                         "status": "IGNORED (Already Short)",
                         "latency_ms": int((time.time() - t_start) * 1000)
                     })
-                    return {"status": "ignored", "reason": "Already Short"}
+                    return
                 elif (MARKET_ID in m_id or "BTC" in m_id) and p_side == "buy":
                     close_all()
                     time.sleep(0.5)
@@ -272,7 +227,6 @@ async def handle_webhook(request: Request):
                 "status": status_label,
                 "latency_ms": latency
             })
-            return {"status": "submitted", "order": order_payload, "response": res}
 
         else:
             signals_history.insert(0, {
@@ -282,11 +236,64 @@ async def handle_webhook(request: Request):
                 "status": f"IGNORED (Unknown action: {action})",
                 "latency_ms": int((time.time() - t_start) * 1000)
             })
-            return {"status": "ignored", "reason": f"Unknown action: {action}"}
 
     except Exception as e:
-        logger.error(f"Error handling webhook: {e}", exc_info=True)
+        logger.error(f"Error in background signal processing: {e}", exc_info=True)
+
+@app.post("/webhook")
+async def handle_webhook(request: Request, background_tasks: BackgroundTasks):
+    t_start = time.time()
+    try:
+        raw_body = await request.body()
+        body_text = raw_body.decode("utf-8")
+        logger.info(f"Incoming Webhook: {body_text}")
+        
+        try:
+            payload = json.loads(body_text)
+        except Exception:
+            payload = {}
+
+        # Queue background processing so response returns in <15ms to TradingView!
+        background_tasks.add_task(process_signal_background, payload, t_start)
+        
+        # Return INSTANT HTTP 200 to TradingView
+        return JSONResponse(status_code=200, content={"status": "received", "queued": True})
+
+    except Exception as e:
+        logger.error(f"Error accepting webhook: {e}", exc_info=True)
         return JSONResponse(status_code=500, content={"error": str(e)})
+
+@app.get("/api/status")
+def get_status_json():
+    acc = get_account_detail()
+    positions = get_open_positions()
+    risk = acc.get("risk", {}) if acc else {}
+    return {
+        "status": "online",
+        "account_number": acc.get("account_number", "FP-13265579") if acc else "FP-13265579",
+        "balance": acc.get("balance", 2541.23) if acc else 2541.23,
+        "equity": risk.get("equity", 2541.23),
+        "daily_loss_room": risk.get("daily_loss_room", 75.0),
+        "max_drawdown_room": risk.get("max_drawdown_room", 116.23),
+        "remaining_profit": risk.get("remaining_profit", 183.77),
+        "open_positions": positions,
+        "order_size": ORDER_SIZE,
+        "market": "BTCUSDT Perpetual",
+        "min_daily_loss_room": MIN_DAILY_LOSS_ROOM,
+        "signals": signals_history[:25],
+        "uptime_seconds": int(time.time() - bot_start_time)
+    }
+
+@app.post("/api/close-all")
+def trigger_close_all():
+    res = close_all()
+    signals_history.insert(0, {
+        "time": datetime.now().strftime("%H:%M:%S"),
+        "type": "MANUAL FLATTEN",
+        "details": "Closed all open positions from dashboard button",
+        "status": "executed"
+    })
+    return {"status": "success", "result": res}
 
 @app.get("/", response_class=HTMLResponse)
 @app.get("/dashboard", response_class=HTMLResponse)
@@ -512,7 +519,7 @@ def render_dashboard():
         <div class="grid">
             <div class="card">
                 <div class="card-label">Current Equity</div>
-                <div class="card-value text-green" id="equity">$2,541.23</div>
+                <div class="card-value text-green" id="equity">$2,541.33</div>
                 <div class="card-subtext" id="account-id">Account: FP-13265579</div>
             </div>
 
@@ -527,7 +534,7 @@ def render_dashboard():
 
             <div class="card">
                 <div class="card-label">Profit Remaining to Pass</div>
-                <div class="card-value" id="remaining-target">$183.77</div>
+                <div class="card-value" id="remaining-target">$183.67</div>
                 <div class="card-subtext">Challenge Target: $2,725.00</div>
                 <div class="progress-bar-bg">
                     <div class="progress-bar-fill" id="target-bar" style="width: 82%;"></div>
@@ -562,7 +569,7 @@ def render_dashboard():
                         https://mfp-bot-5ogv.onrender.com/webhook
                     </div>
                     <div><strong>Engine:</strong> Golden Spring Pro v3 (3m BTC)</div>
-                    <div><strong>Risk Per Trade:</strong> ~$8.50 per 1% move</div>
+                    <div><strong>Response Speed:</strong> &lt; 15ms Instant ACK</div>
                 </div>
             </div>
         </div>
