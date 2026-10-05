@@ -22,24 +22,24 @@ logging.basicConfig(
 )
 logger = logging.getLogger("MFPBot")
 
-# --- CONFIGURATION ---
-API_KEY = "fp_live_d1fc94efa55ae1c34e859ee7ede568d222d93edd1886179def9adf075fbbcff7"
+# --- CONFIGURATION ($150K COMPETITION ACCOUNT) ---
+API_KEY = "fp_live_fd4a80ab0f6261bc266d1b98c807b8eacd4a30406e1c539375f8a213c29014af"
 BASE_URL = "https://developers.myfundedperpetuals.com"
-ACCOUNT_ID = "jh71tm3e391rhw0pvmp5811k398f35v1"  # FP-13265579
+ACCOUNT_ID = "jh7aags9xp202ge85jgtahtx2h8fqrst"  # FP-21334487 ($150K Competition)
 MARKET_ID = "binance|BTCUSDT"
-ORDER_SIZE = 0.05  # Calibrated institutional sizing: 0.05 BTC (~$10 risk per trade)
+ORDER_SIZE = 0.50  # Real institutional sizing: 0.50 BTC ($100 - $250+ per trade!)
 LEVERAGE = 5
 MARGIN_MODE = "cross"
 SLIPPAGE_BPS = 50
 
-# Strict Risk Controls
-MIN_DAILY_LOSS_ROOM = 35.00  # Halt if daily loss room drops below $35
+# Strict Risk Controls ($150K Scale)
+MIN_DAILY_LOSS_ROOM = 1000.00  # Safe daily buffer on $150K account
 
 # In-memory history for live dashboard feed
 signals_history = []
 bot_start_time = time.time()
 
-app = FastAPI(title="MyFundedPerps Agentic Dashboard & Webhook Bridge")
+app = FastAPI(title="MyFundedPerps $150K Competition Webhook Bridge")
 
 def api_request(endpoint: str, method: str = "GET", payload: dict = None):
     url = f"{BASE_URL}{endpoint}"
@@ -99,7 +99,12 @@ def process_signal_background(payload: dict, t_start: float):
         # 1. Official Risk Check
         acc = get_account_detail()
         risk = acc.get("risk", {}) if acc else {}
-        daily_loss_room = risk.get("daily_loss_room", 75.0)
+        equity = float(risk.get("equity", 150000.0))
+        
+        # Calculate daily room safely for competition account
+        daily_loss_room = risk.get("daily_loss_room")
+        if daily_loss_room is None:
+            daily_loss_room = max(0.0, equity - 145000.0) # $5,000 buffer
 
         if daily_loss_room < MIN_DAILY_LOSS_ROOM:
             logger.error(f"RISK CHECK FAILED: daily_loss_room (${daily_loss_room:.2f}) < ${MIN_DAILY_LOSS_ROOM}. Rejected.")
@@ -145,7 +150,7 @@ def process_signal_background(payload: dict, t_start: float):
             quote = get_market_quote("buy")
             expected_price = quote.get("estimated_fill_price") or quote.get("ask") or price
             if not expected_price:
-                expected_price = 86000.0
+                expected_price = 85200.0
 
             order_payload = {
                 "client_order_id": f"gs-buy-{int(time.time()*1000)}",
@@ -197,7 +202,7 @@ def process_signal_background(payload: dict, t_start: float):
             quote = get_market_quote("sell")
             expected_price = quote.get("estimated_fill_price") or quote.get("bid") or price
             if not expected_price:
-                expected_price = 86000.0
+                expected_price = 85200.0
 
             order_payload = {
                 "client_order_id": f"gs-sell-{int(time.time()*1000)}",
@@ -265,14 +270,18 @@ def get_status_json():
     acc = get_account_detail()
     positions = get_open_positions()
     risk = acc.get("risk", {}) if acc else {}
+    equity = float(risk.get("equity", 150000.0))
+    daily_room = risk.get("daily_loss_room")
+    if daily_room is None:
+        daily_room = max(0.0, equity - 145000.0)
+
     return {
         "status": "online",
-        "account_number": acc.get("account_number", "FP-13265579") if acc else "FP-13265579",
-        "balance": acc.get("balance", 2541.33) if acc else 2541.33,
-        "equity": risk.get("equity", 2541.33),
-        "daily_loss_room": risk.get("daily_loss_room", 75.0),
-        "max_drawdown_room": risk.get("max_drawdown_room", 116.23),
-        "remaining_profit": risk.get("remaining_profit", 183.67),
+        "account_number": acc.get("account_number", "FP-21334487") if acc else "FP-21334487",
+        "name": acc.get("name", "October Competition") if acc else "October Competition",
+        "balance": acc.get("balance", 150000.0) if acc else 150000.0,
+        "equity": equity,
+        "daily_loss_room": daily_room,
         "open_positions": positions,
         "order_size": ORDER_SIZE,
         "market": "BTCUSDT Perpetual",
@@ -300,7 +309,7 @@ def render_dashboard():
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>MyFundedPerps - Live Cloud Bot Dashboard</title>
+    <title>MyFundedPerps - $150K Competition Live Console</title>
     <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
     <style>
         :root {
@@ -404,20 +413,6 @@ def render_dashboard():
         .text-blue { color: var(--accent-blue); }
         .text-red { color: var(--accent-red); }
 
-        .progress-bar-bg {
-            background: #1E2530;
-            height: 8px;
-            border-radius: 4px;
-            margin-top: 12px;
-            overflow: hidden;
-        }
-        .progress-bar-fill {
-            background: linear-gradient(90deg, #00E676, #00B0FF);
-            height: 100%;
-            border-radius: 4px;
-            transition: width 0.5s ease;
-        }
-
         .two-cols {
             display: grid;
             grid-template-columns: 1fr 1fr;
@@ -504,8 +499,8 @@ def render_dashboard():
     <div class="container">
         <header>
             <div class="logo-area">
-                <span class="logo-badge">CLOUD AGENT</span>
-                <span class="logo-title">MyFundedPerps Live Console</span>
+                <span class="logo-badge">$150K ENGINE</span>
+                <span class="logo-title">MyFundedPerps October Competition</span>
             </div>
             <div class="status-badge">
                 <span class="pulsing-dot"></span>
@@ -515,33 +510,27 @@ def render_dashboard():
 
         <div class="grid">
             <div class="card">
-                <div class="card-label">Current Equity</div>
-                <div class="card-value text-green" id="equity">$2,541.33</div>
-                <div class="card-subtext" id="account-id">Account: FP-13265579</div>
+                <div class="card-label">Account Equity</div>
+                <div class="card-value text-green" id="equity">$150,000.00</div>
+                <div class="card-subtext" id="account-id">Account: FP-21334487</div>
             </div>
 
             <div class="card">
-                <div class="card-label">Daily Loss Room</div>
-                <div class="card-value text-blue" id="daily-room">$75.00</div>
-                <div class="card-subtext">Safety Halt at $35.00</div>
-                <div class="progress-bar-bg">
-                    <div class="progress-bar-fill" id="daily-bar" style="width: 100%;"></div>
-                </div>
+                <div class="card-label">Risk Cushion Buffer</div>
+                <div class="card-value text-blue" id="daily-room">$5,000.00</div>
+                <div class="card-subtext">Safety Halt at $1,000.00</div>
             </div>
 
             <div class="card">
-                <div class="card-label">Profit Remaining to Pass</div>
-                <div class="card-value" id="remaining-target">$183.67</div>
-                <div class="card-subtext">Challenge Target: $2,725.00</div>
-                <div class="progress-bar-bg">
-                    <div class="progress-bar-fill" id="target-bar" style="width: 82%;"></div>
-                </div>
+                <div class="card-label">Position Sizing</div>
+                <div class="card-value">0.50 BTC</div>
+                <div class="card-subtext">Target: +$100 to +$250 / Trade</div>
             </div>
 
             <div class="card">
-                <div class="card-label">Trading Configuration</div>
-                <div class="card-value" style="font-size: 22px;">0.05 BTC</div>
-                <div class="card-subtext">5x Leverage | ~$10 Risk / Trade</div>
+                <div class="card-label">Leverage Mode</div>
+                <div class="card-value" style="font-size: 22px;">5x Cross</div>
+                <div class="card-subtext">Uses &lt;6% Account Margin</div>
             </div>
         </div>
 
@@ -561,12 +550,12 @@ def render_dashboard():
                     <span class="section-title">Webhook Configuration</span>
                 </div>
                 <div style="font-size: 13px; line-height: 1.6; color: var(--text-muted);">
-                    <div><strong>Permanent Cloud Webhook:</strong></div>
+                    <div><strong>Active Cloud Webhook:</strong></div>
                     <div style="background: #171C24; padding: 10px; border-radius: 6px; font-family: monospace; color: #00E676; margin: 8px 0; word-break: break-all;">
                         https://mfp-bot-5ogv.onrender.com/webhook
                     </div>
-                    <div><strong>Engine:</strong> Golden Spring Pro v3 (3m BTC)</div>
-                    <div><strong>Response Speed:</strong> &lt; 15ms Instant ACK</div>
+                    <div><strong>Engine:</strong> Golden Spring Pro v3</div>
+                    <div><strong>Expected Profit / Move:</strong> +$100 to +$250 per runner</div>
                 </div>
             </div>
         </div>
@@ -603,16 +592,9 @@ def render_dashboard():
                 const res = await fetch('/api/status');
                 const data = await res.json();
 
-                document.getElementById('equity').innerText = '$' + parseFloat(data.equity).toFixed(2);
+                document.getElementById('equity').innerText = '$' + parseFloat(data.equity).toLocaleString('en-US', {minimumFractionDigits: 2});
                 document.getElementById('account-id').innerText = 'Account: ' + data.account_number;
-                document.getElementById('daily-room').innerText = '$' + parseFloat(data.daily_loss_room).toFixed(2);
-                document.getElementById('remaining-target').innerText = '$' + parseFloat(data.remaining_profit).toFixed(2);
-
-                const dailyPct = Math.min(100, Math.max(0, (data.daily_loss_room / 75.0) * 100));
-                document.getElementById('daily-bar').style.width = dailyPct + '%';
-
-                const targetPct = Math.min(100, Math.max(0, ((225 - data.remaining_profit) / 225) * 100));
-                document.getElementById('target-bar').style.width = targetPct + '%';
+                document.getElementById('daily-room').innerText = '$' + parseFloat(data.daily_loss_room).toLocaleString('en-US', {minimumFractionDigits: 2});
 
                 const posContainer = document.getElementById('position-container');
                 if (data.open_positions && data.open_positions.length > 0) {
