@@ -82,7 +82,7 @@ def get_market_quote(side: str):
     res = api_request(f"/v1/markets/{quoted_market}/quote?side={side}&size={ORDER_SIZE}")
     if res.get("data"):
         return res["data"]
-    return None
+    return {}
 
 def close_all():
     logger.info(f"Closing all positions for account {ACCOUNT_ID}...")
@@ -135,11 +135,11 @@ async def handle_webhook(request: Request):
         except Exception:
             payload = {}
 
-        action = str(payload.get("action", "")).lower()
+        action = str(payload.get("action", "")).strip().lower()
         price = payload.get("price")
         ticker = payload.get("ticker", "BTCUSD")
 
-        # 1. Official Risk Check
+        # 1. Official Risk Check directly from MyFundedPerps engine
         acc = get_account_detail()
         risk = acc.get("risk", {}) if acc else {}
         daily_loss_room = risk.get("daily_loss_room", 75.0)
@@ -148,8 +148,8 @@ async def handle_webhook(request: Request):
             logger.error(f"RISK CHECK FAILED: daily_loss_room (${daily_loss_room:.2f}) < ${MIN_DAILY_LOSS_ROOM}. Rejected.")
             signals_history.insert(0, {
                 "time": datetime.now().strftime("%H:%M:%S"),
-                "action": action.upper(),
-                "price": price,
+                "action": action.upper() if action else "UNKNOWN",
+                "price": price or "-",
                 "status": "REJECTED (Floor Protected)",
                 "latency_ms": int((time.time() - t_start) * 1000)
             })
@@ -162,7 +162,7 @@ async def handle_webhook(request: Request):
             signals_history.insert(0, {
                 "time": datetime.now().strftime("%H:%M:%S"),
                 "action": "EXIT",
-                "price": price,
+                "price": price or "-",
                 "status": "EXECUTED (Position Closed)",
                 "latency_ms": int((time.time() - t_start) * 1000)
             })
@@ -171,21 +171,25 @@ async def handle_webhook(request: Request):
         elif action in ["buy", "long"]:
             positions = get_open_positions()
             for p in positions:
-                if p.get("market_id") == MARKET_ID and p.get("side") == "buy":
+                m_id = p.get("market_id") or p.get("symbol") or ""
+                p_side = str(p.get("side", "")).lower()
+                if (MARKET_ID in m_id or "BTC" in m_id) and p_side == "buy":
                     signals_history.insert(0, {
                         "time": datetime.now().strftime("%H:%M:%S"),
                         "action": "BUY",
-                        "price": price,
+                        "price": price or "-",
                         "status": "IGNORED (Already Long)",
                         "latency_ms": int((time.time() - t_start) * 1000)
                     })
                     return {"status": "ignored", "reason": "Already Long"}
-                elif p.get("market_id") == MARKET_ID and p.get("side") == "sell":
+                elif (MARKET_ID in m_id or "BTC" in m_id) and p_side == "sell":
                     close_all()
                     time.sleep(0.5)
 
             quote = get_market_quote("buy")
             expected_price = quote.get("estimated_fill_price") or quote.get("ask") or price
+            if not expected_price:
+                expected_price = 86000.0
 
             order_payload = {
                 "client_order_id": f"gs-buy-{int(time.time()*1000)}",
@@ -202,11 +206,17 @@ async def handle_webhook(request: Request):
 
             res = api_request("/v1/orders", method="POST", payload=order_payload)
             latency = int((time.time() - t_start) * 1000)
+            
+            if res.get("error"):
+                status_label = f"FAILED: {res.get('code', 'API Error')}"
+            else:
+                status_label = "FILLED"
+
             signals_history.insert(0, {
                 "time": datetime.now().strftime("%H:%M:%S"),
                 "action": "BUY (0.01 BTC)",
-                "price": expected_price,
-                "status": "FILLED",
+                "price": round(float(expected_price), 2),
+                "status": status_label,
                 "latency_ms": latency
             })
             return {"status": "submitted", "order": order_payload, "response": res}
@@ -214,21 +224,25 @@ async def handle_webhook(request: Request):
         elif action in ["sell", "short"]:
             positions = get_open_positions()
             for p in positions:
-                if p.get("market_id") == MARKET_ID and p.get("side") == "sell":
+                m_id = p.get("market_id") or p.get("symbol") or ""
+                p_side = str(p.get("side", "")).lower()
+                if (MARKET_ID in m_id or "BTC" in m_id) and p_side == "sell":
                     signals_history.insert(0, {
                         "time": datetime.now().strftime("%H:%M:%S"),
                         "action": "SELL",
-                        "price": price,
+                        "price": price or "-",
                         "status": "IGNORED (Already Short)",
                         "latency_ms": int((time.time() - t_start) * 1000)
                     })
                     return {"status": "ignored", "reason": "Already Short"}
-                elif p.get("market_id") == MARKET_ID and p.get("side") == "buy":
+                elif (MARKET_ID in m_id or "BTC" in m_id) and p_side == "buy":
                     close_all()
                     time.sleep(0.5)
 
             quote = get_market_quote("sell")
             expected_price = quote.get("estimated_fill_price") or quote.get("bid") or price
+            if not expected_price:
+                expected_price = 86000.0
 
             order_payload = {
                 "client_order_id": f"gs-sell-{int(time.time()*1000)}",
@@ -245,14 +259,30 @@ async def handle_webhook(request: Request):
 
             res = api_request("/v1/orders", method="POST", payload=order_payload)
             latency = int((time.time() - t_start) * 1000)
+
+            if res.get("error"):
+                status_label = f"FAILED: {res.get('code', 'API Error')}"
+            else:
+                status_label = "FILLED"
+
             signals_history.insert(0, {
                 "time": datetime.now().strftime("%H:%M:%S"),
                 "action": "SELL (0.01 BTC)",
-                "price": expected_price,
-                "status": "FILLED",
+                "price": round(float(expected_price), 2),
+                "status": status_label,
                 "latency_ms": latency
             })
             return {"status": "submitted", "order": order_payload, "response": res}
+
+        else:
+            signals_history.insert(0, {
+                "time": datetime.now().strftime("%H:%M:%S"),
+                "action": action.upper() if action else "PING/TEST",
+                "price": price or "-",
+                "status": f"IGNORED (Unknown action: {action})",
+                "latency_ms": int((time.time() - t_start) * 1000)
+            })
+            return {"status": "ignored", "reason": f"Unknown action: {action}"}
 
     except Exception as e:
         logger.error(f"Error handling webhook: {e}", exc_info=True)
@@ -266,7 +296,7 @@ def render_dashboard():
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>MyFundedPerps - Live Bot Dashboard</title>
+    <title>MyFundedPerps - Live Cloud Bot Dashboard</title>
     <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
     <style>
         :root {
@@ -290,7 +320,6 @@ def render_dashboard():
         }
         .container { max-width: 1200px; margin: 0 auto; }
         
-        /* Top Navigation Header */
         header {
             display: flex;
             justify-content: space-between;
@@ -332,7 +361,6 @@ def render_dashboard():
         }
         @keyframes pulse { 0% { opacity: 1; transform: scale(1); } 50% { opacity: 0.4; transform: scale(1.3); } 100% { opacity: 1; transform: scale(1); } }
 
-        /* Metric Grid */
         .grid {
             display: grid;
             grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
@@ -372,7 +400,6 @@ def render_dashboard():
         .text-blue { color: var(--accent-blue); }
         .text-red { color: var(--accent-red); }
 
-        /* Progress Bar */
         .progress-bar-bg {
             background: #1E2530;
             height: 8px;
@@ -387,7 +414,6 @@ def render_dashboard():
             transition: width 0.5s ease;
         }
 
-        /* Two Column Layout */
         .two-cols {
             display: grid;
             grid-template-columns: 1fr 1fr;
@@ -404,7 +430,6 @@ def render_dashboard():
         }
         .section-title { font-size: 16px; font-weight: 700; letter-spacing: -0.2px; }
 
-        /* Positions Card */
         .position-box {
             background: #171C24;
             border: 1px solid var(--card-border);
@@ -424,7 +449,6 @@ def render_dashboard():
             font-size: 14px;
         }
 
-        /* Signals Table */
         .table-card {
             background-color: var(--card-bg);
             border: 1px solid var(--card-border);
@@ -459,7 +483,6 @@ def render_dashboard():
         .badge-sell { background: rgba(255, 82, 82, 0.15); color: var(--accent-red); }
         .badge-exit { background: rgba(41, 121, 255, 0.15); color: var(--accent-blue); }
 
-        /* Action Buttons */
         .btn-flatten {
             background: rgba(255, 82, 82, 0.15);
             border: 1px solid var(--accent-red);
@@ -475,10 +498,9 @@ def render_dashboard():
 </head>
 <body>
     <div class="container">
-        <!-- Top Nav -->
         <header>
             <div class="logo-area">
-                <span class="logo-badge">AGENT BOT</span>
+                <span class="logo-badge">CLOUD AGENT</span>
                 <span class="logo-title">MyFundedPerps Live Console</span>
             </div>
             <div class="status-badge">
@@ -487,7 +509,6 @@ def render_dashboard():
             </div>
         </header>
 
-        <!-- Metric Cards -->
         <div class="grid">
             <div class="card">
                 <div class="card-label">Current Equity</div>
@@ -520,7 +541,6 @@ def render_dashboard():
             </div>
         </div>
 
-        <!-- Section 2: Active Positions & Controls -->
         <div class="two-cols">
             <div class="card">
                 <div class="section-header">
@@ -537,9 +557,9 @@ def render_dashboard():
                     <span class="section-title">Webhook Configuration</span>
                 </div>
                 <div style="font-size: 13px; line-height: 1.6; color: var(--text-muted);">
-                    <div><strong>Webhook Endpoint:</strong></div>
+                    <div><strong>Permanent Cloud Webhook:</strong></div>
                     <div style="background: #171C24; padding: 10px; border-radius: 6px; font-family: monospace; color: #00E676; margin: 8px 0; word-break: break-all;">
-                        https://birthday-timing-advertising-civic.trycloudflare.com/webhook
+                        https://mfp-bot-5ogv.onrender.com/webhook
                     </div>
                     <div><strong>Engine:</strong> Golden Spring Pro v3 (3m BTC)</div>
                     <div><strong>Risk Per Trade:</strong> ~$8.50 per 1% move</div>
@@ -547,7 +567,6 @@ def render_dashboard():
             </div>
         </div>
 
-        <!-- Section 3: Signals Log -->
         <div class="table-card">
             <div class="section-header">
                 <span class="section-title">Live Signal Execution Feed</span>
@@ -580,27 +599,24 @@ def render_dashboard():
                 const res = await fetch('/api/status');
                 const data = await res.json();
 
-                // Update Numbers
                 document.getElementById('equity').innerText = '$' + parseFloat(data.equity).toFixed(2);
                 document.getElementById('account-id').innerText = 'Account: ' + data.account_number;
                 document.getElementById('daily-room').innerText = '$' + parseFloat(data.daily_loss_room).toFixed(2);
                 document.getElementById('remaining-target').innerText = '$' + parseFloat(data.remaining_profit).toFixed(2);
 
-                // Progress Bars
                 const dailyPct = Math.min(100, Math.max(0, (data.daily_loss_room / 75.0) * 100));
                 document.getElementById('daily-bar').style.width = dailyPct + '%';
 
                 const targetPct = Math.min(100, Math.max(0, ((225 - data.remaining_profit) / 225) * 100));
                 document.getElementById('target-bar').style.width = targetPct + '%';
 
-                // Positions
                 const posContainer = document.getElementById('position-container');
                 if (data.open_positions && data.open_positions.length > 0) {
                     const p = data.open_positions[0];
                     posContainer.innerHTML = `
                         <div class="position-box">
                             <div>
-                                <div style="font-weight: 700; font-size: 15px;">${p.market_id}</div>
+                                <div style="font-weight: 700; font-size: 15px;">${p.market_id || 'BTCUSDT'}</div>
                                 <div style="font-size: 12px; color: var(--text-muted); margin-top: 4px;">Size: ${p.size} BTC | Entry: $${p.entry_price || 'Market'}</div>
                             </div>
                             <div style="text-align: right;">
@@ -612,7 +628,6 @@ def render_dashboard():
                     posContainer.innerHTML = '<div class="flat-box">Currently Flat (No Open Position)</div>';
                 }
 
-                // Signals Table
                 const tbody = document.getElementById('signals-tbody');
                 if (data.signals && data.signals.length > 0) {
                     tbody.innerHTML = data.signals.map(s => `
@@ -621,7 +636,7 @@ def render_dashboard():
                             <td><span class="badge ${s.action && s.action.includes('BUY') ? 'badge-buy' : s.action && s.action.includes('SELL') ? 'badge-sell' : 'badge-exit'}">${s.action || 'SIGNAL'}</span></td>
                             <td>$${s.price || '-'}</td>
                             <td>${s.latency_ms ? s.latency_ms + 'ms' : '-'}</td>
-                            <td style="color: ${s.status && s.status.includes('REJECTED') ? '#FF5252' : '#00E676'};">${s.status}</td>
+                            <td style="color: ${s.status && (s.status.includes('REJECTED') || s.status.includes('FAILED')) ? '#FF5252' : '#00E676'};">${s.status}</td>
                         </tr>
                     `).join('');
                 }
@@ -640,7 +655,6 @@ def render_dashboard():
             }
         }
 
-        // Fetch immediately and poll every 3 seconds
         fetchStatus();
         setInterval(fetchStatus, 3000);
     </script>
